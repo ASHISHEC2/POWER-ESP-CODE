@@ -1,0 +1,82 @@
+#include <Wire.h>
+#include <Adafruit_INA149.h>
+#include "BluetoothSerial.h"
+
+BluetoothSerial SerialBT;
+
+Adafruit_INA149 ina149;
+
+// Initial values (to be set by mobile app)
+float expected_power_supply = 0.0;
+float expected_power_battery = 0.0;
+float expected_power_load = 0.0;
+
+// Sensor pins for WCS1800
+const int WCS_SUPPLY_PIN = 34;
+const int WCS_LOAD_PIN = 35;
+
+// Constants
+const float SUPPLY_VOLTAGE = 12.0;  // Assume 12V for supply
+const float LOAD_VOLTAGE = 5.0;     // Assume 5V for load
+const float WCS_SENSITIVITY = 0.066; // 66mV/A (depends on model)
+
+void setup() {
+  Serial.begin(115200);
+  SerialBT.begin("ESP32_PowerMonitor");
+  ina149.begin();
+}
+
+float readCurrentWCS(int pin) {
+  int adcValue = analogRead(pin);
+  float voltage = (adcValue / 4095.0) * 3.3; // Convert to voltage (ADC is 12-bit)
+  float current = (voltage - 2.5) / WCS_SENSITIVITY; // Assuming mid-voltage at 2.5V
+  return abs(current); // return positive current
+}
+
+void loop() {
+  // Read values
+  float current_supply = readCurrentWCS(WCS_SUPPLY_PIN);
+  float power_supply = current_supply * SUPPLY_VOLTAGE;
+
+  float battery_voltage = ina219.getBusVoltage_V();
+  float battery_current = ina219.getCurrent_mA() / 1000.0; // Convert mA to A
+  float power_battery = battery_voltage * battery_current;
+
+  float current_load = readCurrentWCS(WCS_LOAD_PIN);
+  float power_load = current_load * LOAD_VOLTAGE;
+
+  // Calculate Efficiencies
+  float eff_supply_to_battery = (power_battery / power_supply) * 100.0;
+  float eff_battery_to_load = (power_load / power_battery) * 100.0;
+  float eff_total = (power_load / power_supply) * 100.0;
+
+  // Send data over Bluetooth
+  String data = "SUPPLY=" + String(power_supply, 2) +
+                ",BATTERY=" + String(power_battery, 2) +
+                ",LOAD=" + String(power_load, 2) +
+                ",EFF_SUPPLY_BATTERY=" + String(eff_supply_to_battery, 1) +
+                ",EFF_BATTERY_LOAD=" + String(eff_battery_to_load, 1) +
+                ",EFF_TOTAL=" + String(eff_total, 1);
+
+  if (eff_supply_to_battery < 50.0 || eff_battery_to_load < 50.0 || eff_total < 50.0) {
+    data += ",ALERT=Efficiency below 50%";
+  }
+
+  SerialBT.println(data);
+  delay(1000);
+
+  // Receive initial power values from app
+  if (SerialBT.available()) {
+    String input = SerialBT.readStringUntil('\n');
+    if (input.startsWith("INIT:")) {
+      int idx1 = input.indexOf(',');
+      int idx2 = input.indexOf(',', idx1 + 1);
+
+      expected_power_supply = input.substring(5, idx1).toFloat();
+      expected_power_battery = input.substring(idx1 + 1, idx2).toFloat();
+      expected_power_load = input.substring(idx2 + 1).toFloat();
+
+      SerialBT.println("Initial values set.");
+    }
+  }
+}
